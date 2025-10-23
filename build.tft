@@ -1,0 +1,23 @@
+sudo apt update
+sudo apt install -y \
+git \
+openjdk-11-jdk \
+python3 \
+python3-pip \
+build-essential \
+libncurses5-dev \
+libncursesw5-dev \
+zlib1g-dev \
+g++ \
+flex \
+bison \
+gawk \
+libssl-dev \
+bc \
+lzop \
+curl \
+xz-utils \
+unzip
+sudo apt install openjdk-11-jdk
+sudo apt update
+sudo apt install -y nodejs
