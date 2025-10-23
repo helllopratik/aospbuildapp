@@ -195,16 +195,13 @@ export default function App() {
   };
 
   const renderHeader = () => (
-    <LinearGradient
-      colors={['#667eea', '#764ba2']}
-      style={styles.header}
-    >
+    <View style={styles.header}>
       <View style={styles.headerContent}>
         <Ionicons name="construct" size={32} color="white" />
         <Text style={styles.headerTitle}>AOSP ROM Builder</Text>
       </View>
       <Text style={styles.headerSubtitle}>Build Custom Android ROMs</Text>
-    </LinearGradient>
+    </View>
   );
 
   const renderStepIndicator = () => (
