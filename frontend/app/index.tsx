@@ -590,7 +590,8 @@ const styles = StyleSheet.create({
   header: {
     paddingTop: Platform.OS === 'ios' ? 50 : 30,
     paddingBottom: 20,
-    paddingHorizontal: 20
+    paddingHorizontal: 20,
+    backgroundColor: '#667eea'
   },
   headerContent: {
     flexDirection: 'row',
