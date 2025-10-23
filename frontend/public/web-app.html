@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AOSP ROM Builder</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .step-indicator-line {
+            position: absolute;
+            top: 16px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #e5e7eb;
+            z-index: 0;
+        }
+        .animate-pulse-slow {
+            animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .slide-in {
+            animation: slideIn 0.5s ease-out;
+        }
+        .log-container {
+            background: #1f2937;
+            color: #10b981;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            padding: 16px;
+            border-radius: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .progress-bar {
+            transition: width 0.5s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        const API_URL = 'http://localhost:8001';
+
+        function App() {
+            const [currentStep, setCurrentStep] = useState(0);
+            const [systemReady, setSystemReady] = useState(false);
+            const [checkingSystem, setCheckingSystem] = useState(false);
+            const [buildDirectory, setBuildDirectory] = useState('/home/user/aosp-build');
+            
+            // Source configurations
+            const [deviceTreeMethod, setDeviceTreeMethod] = useState('search');
+            const [kernelMethod, setKernelMethod] = useState('search');
+            const [vendorMethod, setVendorMethod] = useState('search');
+            
+            const [searchQuery, setSearchQuery] = useState('');
+            const [searchResults, setSearchResults] = useState([]);
+            const [searching, setSearching] = useState(false);
+            const [currentSourceType, setCurrentSourceType] = useState('device');
+            
+            const [deviceTree, setDeviceTree] = useState({ method: '', value: '' });
+            const [kernel, setKernel] = useState({ method: '', value: '' });
+            const [vendor, setVendor] = useState({ method: '', value: '' });
+            
+            // Build config
+            const [deviceName, setDeviceName] = useState('');
+            const [deviceCodename, setDeviceCodename] = useState('');
+            const [androidVersion, setAndroidVersion] = useState('15');
+            const [buildVariant, setBuildVariant] = useState('userdebug');
+            
+            // Build status
+            const [building, setBuilding] = useState(false);
+            const [buildProgress, setBuildProgress] = useState(0);
+            const [buildStage, setBuildStage] = useState('');
+            const [buildLogs, setBuildLogs] = useState([]);
+
+            useEffect(() => {
+                checkSystemRequirements();
+            }, []);
+
+            useEffect(() => {
+                if (building) {
+                    const interval = setInterval(fetchBuildStatus, 2000);
+                    return () => clearInterval(interval);
+                }
+            }, [building]);
+
+            const checkSystemRequirements = async () => {
+                setCheckingSystem(true);
+                try {
+                    const response = await fetch(`${API_URL}/api/system/check`);
+                    const data = await response.json();
+                    setSystemReady(data.system_ready);
+                    
+                    if (!data.system_ready) {
+                        if (window.confirm(`Missing dependencies: ${data.missing.join(', ')}. Install now?`)) {
+                            installDependencies();
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error checking system:', error);
+                    alert('Error checking system requirements');
+                } finally {
+                    setCheckingSystem(false);
+                }
+            };
+
+            const installDependencies = async () => {
+                try {
+                    const response = await fetch(`${API_URL}/api/system/install-dependencies`, {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        alert('Dependencies installed successfully!');
+                        setSystemReady(true);
+                    }
+                } catch (error) {
+                    alert('Failed to install dependencies');
+                }
+            };
+
+            const searchGitHub = async (sourceType) => {
+                if (!searchQuery) return;
+                
+                setSearching(true);
+                try {
+                    const response = await fetch(`${API_URL}/api/search/github`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            query: searchQuery,
+                            source_type: sourceType
+                        })
+                    });
+                    const data = await response.json();
+                    setSearchResults(data.results || []);
+                } catch (error) {
+                    alert('Failed to search GitHub');
+                } finally {
+                    setSearching(false);
+                }
+            };
+
+            const selectRepository = (repo, sourceType) => {
+                const config = { method: 'github', value: repo.clone_url };
+                
+                if (sourceType === 'device') {
+                    setDeviceTree(config);
+                } else if (sourceType === 'kernel') {
+                    setKernel(config);
+                } else if (sourceType === 'vendor') {
+                    setVendor(config);
+                }
+                
+                setSearchResults([]);
+                setSearchQuery('');
+            };
+
+            const startBuild = async () => {
+                if (!deviceName || !deviceCodename || !deviceTree.value || !kernel.value || !vendor.value) {
+                    alert('Please fill in all required fields');
+                    return;
+                }
+                
+                setBuilding(true);
+                try {
+                    const response = await fetch(`${API_URL}/api/build/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            device_name: deviceName,
+                            device_codename: deviceCodename,
+                            android_version: androidVersion,
+                            build_variant: buildVariant,
+                            build_directory: buildDirectory,
+                            device_tree: { source_type: 'device', ...deviceTree },
+                            kernel: { source_type: 'kernel', ...kernel },
+                            vendor: { source_type: 'vendor', ...vendor }
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    if (data.status === 'success') {
+                        setCurrentStep(5);
+                    }
+                } catch (error) {
+                    alert('Failed to start build');
+                    setBuilding(false);
+                }
+            };
+
+            const fetchBuildStatus = async () => {
+                try {
+                    const response = await fetch(`${API_URL}/api/build/status`);
+                    const data = await response.json();
+                    
+                    setBuildProgress(data.progress);
+                    setBuildStage(data.stage);
+                    
+                    const logsResponse = await fetch(`${API_URL}/api/build/logs`);
+                    const logsData = await logsResponse.json();
+                    setBuildLogs(logsData.logs);
+                    
+                    if (data.progress >= 100 || !data.active) {
+                        setBuilding(false);
+                    }
+                } catch (error) {
+                    console.error('Error fetching build status:', error);
+                }
+            };
+
+            const steps = ['Setup', 'Device Tree', 'Kernel', 'Vendor', 'Config', 'Build'];
+
+            const renderStepIndicator = () => (
+                <div className="bg-white shadow-sm py-6 px-4 mb-8">
+                    <div className="max-w-6xl mx-auto">
+                        <div className="relative flex justify-between items-center">
+                            <div className="step-indicator-line"></div>
+                            {steps.map((step, index) => (
+                                <div key={index} className="flex flex-col items-center z-10">
+                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-all duration-300 ${
+                                        currentStep >= index 
+                                            ? 'bg-purple-600 text-white shadow-lg' 
+                                            : 'bg-gray-200 text-gray-500'
+                                    }`}>
+                                        {index + 1}
+                                    </div>
+                                    <span className="mt-2 text-xs font-medium text-gray-600">{step}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const renderSetupStep = () => (
+                <div className="slide-in max-w-3xl mx-auto">
+                    <h2 className="text-3xl font-bold text-gray-800 mb-6">System Setup</h2>
+                    
+                    <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                        <div className="flex items-center mb-4">
+                            <i className="fas fa-cog text-purple-600 text-2xl mr-3"></i>
+                            <h3 className="text-xl font-semibold">System Requirements</h3>
+                        </div>
+                        
+                        {checkingSystem ? (
+                            <div className="flex justify-center py-8">
+                                <i className="fas fa-spinner fa-spin text-4xl text-purple-600"></i>
+                            </div>
+                        ) : (
+                            <div className="text-center py-4">
+                                <i className={`fas ${systemReady ? 'fa-check-circle text-green-500' : 'fa-exclamation-circle text-red-500'} text-5xl mb-4`}></i>
+                                <p className="text-lg font-semibold">
+                                    {systemReady ? 'System Ready!' : 'Dependencies Missing'}
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                    
+                    <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                        <h3 className="text-lg font-semibold mb-4">Build Directory</h3>
+                        <input
+                            type="text"
+                            value={buildDirectory}
+                            onChange={(e) => setBuildDirectory(e.target.value)}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+                            placeholder="/home/user/aosp-build"
+                        />
+                        <p className="text-sm text-gray-500 mt-2">
+                            <i className="fas fa-info-circle mr-1"></i>
+                            Note: AOSP source requires 200GB+ free space
+                        </p>
+                    </div>
+                    
+                    <button
+                        onClick={() => setCurrentStep(1)}
+                        disabled={!systemReady}
+                        className={`w-full py-4 rounded-lg font-semibold text-white transition-all duration-300 ${
+                            systemReady 
+                                ? 'bg-purple-600 hover:bg-purple-700 shadow-lg hover:shadow-xl' 
+                                : 'bg-gray-400 cursor-not-allowed'
+                        }`}
+                    >
+                        Continue <i className="fas fa-arrow-right ml-2"></i>
+                    </button>
+                </div>
+            );
+
+            const renderSourceStep = (title, sourceType, method, setMethod, source, setSource) => (
+                <div className="slide-in max-w-4xl mx-auto">
+                    <h2 className="text-3xl font-bold text-gray-800 mb-6">{title}</h2>
+                    
+                    <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                        <div className="flex gap-4 mb-6">
+                            <button
+                                onClick={() => setMethod('search')}
+                                className={`flex-1 py-3 px-6 rounded-lg font-semibold transition-all duration-300 ${
+                                    method === 'search'
+                                        ? 'bg-purple-600 text-white shadow-lg'
+                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                }`}
+                            >
+                                <i className="fas fa-search mr-2"></i>
+                                Search Online
+                            </button>
+                            
+                            <button
+                                onClick={() => setMethod('manual')}
+                                className={`flex-1 py-3 px-6 rounded-lg font-semibold transition-all duration-300 ${
+                                    method === 'manual'
+                                        ? 'bg-purple-600 text-white shadow-lg'
+                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                }`}
+                            >
+                                <i className="fas fa-edit mr-2"></i>
+                                Manual Input
+                            </button>
+                        </div>
+                        
+                        {method === 'search' ? (
+                            <div>
+                                <div className="flex gap-3 mb-4">
+                                    <input
+                                        type="text"
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+                                        placeholder={`Search for ${sourceType}...`}
+                                        onKeyPress={(e) => e.key === 'Enter' && searchGitHub(sourceType)}
+                                    />
+                                    <button
+                                        onClick={() => searchGitHub(sourceType)}
+                                        className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                                    >
+                                        {searching ? (
+                                            <i className="fas fa-spinner fa-spin"></i>
+                                        ) : (
+                                            <i className="fas fa-search"></i>
+                                        )}
+                                    </button>
+                                </div>
+                                
+                                {searchResults.length > 0 && (
+                                    <div className="space-y-3 max-h-96 overflow-y-auto">
+                                        {searchResults.map((repo, index) => (
+                                            <div
+                                                key={index}
+                                                onClick={() => selectRepository(repo, sourceType)}
+                                                className="p-4 border border-gray-200 rounded-lg hover:border-purple-400 hover:shadow-md cursor-pointer transition-all"
+                                            >
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <h4 className="font-semibold text-lg">{repo.name}</h4>
+                                                    <div className="flex items-center text-yellow-500">
+                                                        <i className="fas fa-star mr-1"></i>
+                                                        <span>{repo.stars}</span>
+                                                    </div>
+                                                </div>
+                                                <p className="text-sm text-gray-600 mb-2">{repo.description || 'No description'}</p>
+                                                <p className="text-xs text-purple-600">{repo.full_name}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div>
+                                <div className="grid grid-cols-2 gap-4 mb-4">
+                                    <button
+                                        onClick={() => setSource({ ...source, method: 'url' })}
+                                        className="p-6 border-2 border-gray-200 rounded-lg hover:border-purple-400 hover:shadow-md transition-all"
+                                    >
+                                        <i className="fas fa-link text-3xl text-purple-600 mb-2"></i>
+                                        <p className="font-semibold">Git URL</p>
+                                    </button>
+                                    
+                                    <button
+                                        onClick={() => setSource({ ...source, method: 'local' })}
+                                        className="p-6 border-2 border-gray-200 rounded-lg hover:border-purple-400 hover:shadow-md transition-all"
+                                    >
+                                        <i className="fas fa-folder text-3xl text-purple-600 mb-2"></i>
+                                        <p className="font-semibold">Local Path</p>
+                                    </button>
+                                </div>
+                                
+                                <input
+                                    type="text"
+                                    value={source.value}
+                                    onChange={(e) => setSource({ ...source, value: e.target.value })}
+                                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+                                    placeholder={source.method === 'local' ? '/path/to/local/folder' : 'https://github.com/...'}
+                                />
+                            </div>
+                        )}
+                        
+                        {source.value && (
+                            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center">
+                                <i className="fas fa-check-circle text-green-500 text-xl mr-3"></i>
+                                <span className="text-sm text-green-800 break-all">{source.value}</span>
+                            </div>
+                        )}
+                    </div>
+                    
+                    <div className="flex gap-4">
+                        <button
+                            onClick={() => setCurrentStep(currentStep - 1)}
+                            className="flex-1 py-4 border-2 border-purple-600 text-purple-600 rounded-lg font-semibold hover:bg-purple-50 transition-colors"
+                        >
+                            <i className="fas fa-arrow-left mr-2"></i>
+                            Back
+                        </button>
+                        
+                        <button
+                            onClick={() => setCurrentStep(currentStep + 1)}
+                            disabled={!source.value}
+                            className={`flex-1 py-4 rounded-lg font-semibold text-white transition-all ${
+                                source.value
+                                    ? 'bg-purple-600 hover:bg-purple-700'
+                                    : 'bg-gray-400 cursor-not-allowed'
+                            }`}
+                        >
+                            Continue <i className="fas fa-arrow-right ml-2"></i>
+                        </button>
+                    </div>
+                </div>
+            );
+
+            const renderBuildConfig = () => (
+                <div className="slide-in max-w-3xl mx-auto">
+                    <h2 className="text-3xl font-bold text-gray-800 mb-6">Build Configuration</h2>
+                    
+                    <div className="space-y-6">
+                        <div className="bg-white rounded-xl shadow-lg p-6">
+                            <label className="block text-sm font-semibold mb-2">Device Name</label>
+                            <input
+                                type="text"
+                                value={deviceName}
+                                onChange={(e) => setDeviceName(e.target.value)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600"
+                                placeholder="e.g., Lenovo K10 Note"
+                            />
+                        </div>
+                        
+                        <div className="bg-white rounded-xl shadow-lg p-6">
+                            <label className="block text-sm font-semibold mb-2">Device Codename</label>
+                            <input
+                                type="text"
+                                value={deviceCodename}
+                                onChange={(e) => setDeviceCodename(e.target.value)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600"
+                                placeholder="e.g., kunlun2"
+                            />
+                        </div>
+                        
+                        <div className="bg-white rounded-xl shadow-lg p-6">
+                            <label className="block text-sm font-semibold mb-3">Android Version</label>
+                            <div className="grid grid-cols-3 gap-3">
+                                {['14', '15', '16'].map((version) => (
+                                    <button
+                                        key={version}
+                                        onClick={() => setAndroidVersion(version)}
+                                        className={`py-3 rounded-lg font-semibold transition-all ${
+                                            androidVersion === version
+                                                ? 'bg-purple-600 text-white shadow-lg'
+                                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                        }`}
+                                    >
+                                        Android {version}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        
+                        <div className="bg-white rounded-xl shadow-lg p-6">
+                            <label className="block text-sm font-semibold mb-3">Build Variant</label>
+                            <div className="grid grid-cols-3 gap-3">
+                                {['user', 'userdebug', 'eng'].map((variant) => (
+                                    <button
+                                        key={variant}
+                                        onClick={() => setBuildVariant(variant)}
+                                        className={`py-3 rounded-lg font-semibold transition-all ${
+                                            buildVariant === variant
+                                                ? 'bg-purple-600 text-white shadow-lg'
+                                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                        }`}
+                                    >
+                                        {variant}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="flex gap-4 mt-6">
+                        <button
+                            onClick={() => setCurrentStep(currentStep - 1)}
+                            className="flex-1 py-4 border-2 border-purple-600 text-purple-600 rounded-lg font-semibold hover:bg-purple-50 transition-colors"
+                        >
+                            <i className="fas fa-arrow-left mr-2"></i>
+                            Back
+                        </button>
+                        
+                        <button
+                            onClick={startBuild}
+                            className="flex-1 py-4 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 transition-colors shadow-lg"
+                        >
+                            <i className="fas fa-hammer mr-2"></i>
+                            Start Build
+                        </button>
+                    </div>
+                </div>
+            );
+
+            const renderBuildDashboard = () => (
+                <div className="slide-in max-w-5xl mx-auto">
+                    <h2 className="text-3xl font-bold text-gray-800 mb-6">
+                        <i className="fas fa-cogs mr-3 text-purple-600"></i>
+                        Building ROM
+                    </h2>
+                    
+                    <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-semibold">{buildStage}</h3>
+                            <span className="text-2xl font-bold text-purple-600">{buildProgress}%</span>
+                        </div>
+                        
+                        <div className="w-full h-4 bg-gray-200 rounded-full overflow-hidden">
+                            <div 
+                                className="progress-bar h-full bg-gradient-to-r from-purple-600 to-pink-600 rounded-full"
+                                style={{ width: `${buildProgress}%` }}
+                            ></div>
+                        </div>
+                        
+                        {building && (
+                            <div className="mt-4 flex items-center text-gray-600">
+                                <i className="fas fa-spinner fa-spin mr-2"></i>
+                                <span>Building... This may take several hours</span>
+                            </div>
+                        )}
+                    </div>
+                    
+                    <div className="bg-white rounded-xl shadow-lg p-6">
+                        <div className="flex items-center mb-4">
+                            <i className="fas fa-terminal text-purple-600 text-xl mr-3"></i>
+                            <h3 className="text-lg font-semibold">Build Logs</h3>
+                        </div>
+                        
+                        <div className="log-container">
+                            {buildLogs.length === 0 ? (
+                                <div className="text-gray-500 text-center py-4">
+                                    Waiting for build logs...
+                                </div>
+                            ) : (
+                                buildLogs.map((log, index) => (
+                                    <div key={index}>{log}</div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                    
+                    {!building && buildProgress >= 100 && (
+                        <button
+                            onClick={() => {
+                                setCurrentStep(0);
+                                setBuildProgress(0);
+                                setBuildStage('');
+                                setBuildLogs([]);
+                            }}
+                            className="w-full mt-6 py-4 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 transition-colors shadow-lg"
+                        >
+                            <i className="fas fa-plus mr-2"></i>
+                            Start New Build
+                        </button>
+                    )}
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen bg-gray-100">
+                    <div className="gradient-bg text-white py-6 px-4 shadow-xl">
+                        <div className="max-w-6xl mx-auto">
+                            <div className="flex items-center mb-2">
+                                <i className="fas fa-hammer text-4xl mr-4"></i>
+                                <h1 className="text-4xl font-bold">AOSP ROM Builder</h1>
+                            </div>
+                            <p className="text-lg opacity-90">Build Custom Android ROMs with Ease</p>
+                        </div>
+                    </div>
+                    
+                    {renderStepIndicator()}
+                    
+                    <div className="px-4 pb-12">
+                        {currentStep === 0 && renderSetupStep()}
+                        {currentStep === 1 && renderSourceStep('Device Tree', 'device', deviceTreeMethod, setDeviceTreeMethod, deviceTree, setDeviceTree)}
+                        {currentStep === 2 && renderSourceStep('Kernel', 'kernel', kernelMethod, setKernelMethod, kernel, setKernel)}
+                        {currentStep === 3 && renderSourceStep('Vendor', 'vendor', vendorMethod, setVendorMethod, vendor, setVendor)}
+                        {currentStep === 4 && renderBuildConfig()}
+                        {currentStep === 5 && renderBuildDashboard()}
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
